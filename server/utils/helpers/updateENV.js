@@ -398,6 +398,42 @@ const KEY_MAPPING = {
     envKey: "WEAVIATE_API_KEY",
     checks: [],
   },
+  WeaviateGrpcEndpoint: {
+    envKey: "WEAVIATE_GRPC_ENDPOINT",
+    // Optional: when empty, the gRPC endpoint is derived from WEAVIATE_ENDPOINT.
+    checks: [(input = "") => (input ? isValidURL(input) : null)],
+  },
+  WeaviateQuantization: {
+    envKey: "WEAVIATE_QUANTIZATION",
+    checks: [
+      (input = "") =>
+        ["", "rq-8", "rq-1", "bq", "sq", "pq"].includes(input)
+          ? null
+          : "Weaviate vector compression must be one of: rq-8, rq-1, bq, sq, pq.",
+    ],
+  },
+  WeaviateMultiTenancy: {
+    envKey: "WEAVIATE_MULTI_TENANCY",
+    checks: [
+      (input = "") =>
+        ["", "true", "false"].includes(input)
+          ? null
+          : 'Weaviate multi-tenancy must be "true" or "false".',
+    ],
+    postUpdate: [handleVectorStoreReset],
+  },
+  WeaviateHybridAlpha: {
+    envKey: "WEAVIATE_HYBRID_ALPHA",
+    checks: [
+      (input = "") => {
+        if (input === "") return null;
+        const alpha = Number(input);
+        return Number.isFinite(alpha) && alpha >= 0 && alpha <= 1
+          ? null
+          : "Hybrid search alpha must be a number between 0 and 1.";
+      },
+    ],
+  },
 
   // QDrant Options
   QdrantEndpoint: {
@@ -1348,6 +1384,22 @@ function noRestrictedChars(input = "") {
 
 async function handleVectorStoreReset(key, prevValue, nextValue) {
   if (prevValue === nextValue) return;
+  if (key === "WeaviateMultiTenancy") {
+    // Unset, "" and "false" all mean off: only an actual switch resets.
+    const on = (value) => String(value ?? "").toLowerCase() === "true";
+    if (on(prevValue) === on(nextValue) || process.env.VECTOR_DB !== "weaviate")
+      return false;
+    console.log(
+      `Weaviate multi-tenancy changed to ${on(nextValue)} - resetting weaviate namespaces`
+    );
+    // Delete the workspaces from the layout they were stored in.
+    process.env.WEAVIATE_MULTI_TENANCY = prevValue ?? "";
+    try {
+      return await resetAllVectorStores({ vectorDbKey: "weaviate" });
+    } finally {
+      process.env.WEAVIATE_MULTI_TENANCY = nextValue;
+    }
+  }
   if (key === "VectorDB") {
     console.log(
       `Vector configuration changed from ${prevValue} to ${nextValue} - resetting ${prevValue} namespaces`
